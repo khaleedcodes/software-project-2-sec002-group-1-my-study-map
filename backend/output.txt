@@ -1,0 +1,442 @@
+File: ./.env
+MONGO_URI=mongodb+srv://general:CFSPggIXL14Z2gD0@test.azixyz4.mongodb.net/mystudymap?retryWrites=true&w=majority&appName=test
+JWT_SECRET=your_jwt_secret-----------------------
+File: ./config/db.js
+const mongoose = require("mongoose");
+const dotenv = require("dotenv");
+
+dotenv.config();
+
+const connectDB = async () => {
+  try {
+    await mongoose.connect(process.env.MONGO_URI, {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+    });
+    console.log("MongoDB Connected...");
+  } catch (error) {
+    console.error(error.message);
+    process.exit(1);
+  }
+};
+
+module.exports = connectDB;
+-----------------------
+File: ./middleware/authMiddleware.js
+const jwt = require("jsonwebtoken");
+
+module.exports = (req, res, next) => {
+  const token = req.header("Authorization");
+  if (!token)
+    return res.status(401).json({ message: "No token, authorization denied" });
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (err) {
+    res.status(401).json({ message: "Invalid token" });
+  }
+};
+-----------------------
+File: ./middleware/roleMiddleware.js
+module.exports =
+  (...roles) =>
+  (req, res, next) => {
+    if (!roles.includes(req.user.role)) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+    next();
+  };
+-----------------------
+File: ./models/Event.js
+const mongoose = require("mongoose");
+
+const EventSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  title: { type: String, required: true },
+  date: { type: Date, required: true },
+  description: { type: String, required: true },
+});
+
+module.exports = mongoose.model("Event", EventSchema);
+-----------------------
+File: ./models/GPA.js
+const mongoose = require("mongoose");
+
+const GPASchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  gpa: { type: Number, required: true },
+  semester: { type: String, required: true },
+  year: { type: Number, required: true },
+});
+
+module.exports = mongoose.model("GPA", GPASchema);
+-----------------------
+File: ./models/Reminder.js
+const mongoose = require('mongoose');
+
+const ReminderSchema = new mongoose.Schema({
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    title: { type: String, required: true },
+    date: { type: String, required: true },
+    time: { type: String, required: true },
+    description: { type: String, required: true }
+});
+
+module.exports = mongoose.model('Reminder', ReminderSchema);
+-----------------------
+File: ./models/Timetable.js
+const mongoose = require("mongoose");
+
+const TimetableSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  events: [
+    {
+      title: String,
+      date: String,
+      time: String,
+      description: String,
+    },
+  ],
+});
+
+module.exports = mongoose.model("Timetable", TimetableSchema);
+-----------------------
+File: ./models/User.js
+const mongoose = require("mongoose");
+const bcrypt = require("bcryptjs");
+
+const UserSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  email: { type: String, unique: true, required: true },
+  password: { type: String, required: true },
+  role: {
+    type: String,
+    enum: ["student", "part-time-student", "parent", "educator", "admin"],
+    default: "student",
+  },
+});
+
+// Hash password before saving
+UserSchema.pre("save", async function (next) {
+  if (!this.isModified("password")) return next();
+  this.password = await bcrypt.hash(this.password, 10);
+  next();
+});
+
+module.exports = mongoose.model("User", UserSchema);
+-----------------------
+File: ./routes/authRoutes.js
+const express = require("express");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
+const User = require("../models/User");
+const router = express.Router();
+
+router.post("/signup", async (req, res) => {
+  const { name, email, password, role } = req.body;
+
+  try {
+    const userExists = await User.findOne({ email });
+    if (userExists)
+      return res.status(400).json({ message: "User already exists" });
+
+    const user = new User({ name, email, password, role });
+    await user.save();
+
+    const token = jwt.sign(
+      { id: user._id, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+
+    res.status(201).json({ token, user });
+  } catch (error) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+router.post("/login", async (req, res) => {
+  const { email, password } = req.body;
+
+  try {
+    const user = await User.findOne({ email });
+    if (!user) return res.status(400).json({ message: "Invalid credentials" });
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch)
+      return res.status(400).json({ message: "Invalid credentials" });
+
+    const token = jwt.sign(
+      { id: user._id, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+
+    res.status(200).json({ token, user });
+  } catch (error) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+module.exports = router;
+-----------------------
+File: ./routes/eventRoutes.js
+const express = require("express");
+const Event = require("../models/Event");
+const authMiddleware = require("../middleware/authMiddleware");
+
+const router = express.Router();
+
+// Create a new event
+router.post("/add-event", authMiddleware, async (req, res) => {
+  const { title, date, description } = req.body;
+
+  try {
+    const event = new Event({
+      userId: req.user.id,
+      title,
+      date,
+      description,
+    });
+
+    await event.save();
+    res.status(201).json(event);
+  } catch (error) {
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// Get all events for a user
+router.get("/events", authMiddleware, async (req, res) => {
+  try {
+    const events = await Event.find({ userId: req.user.id });
+    res.status(200).json(events);
+  } catch (error) {
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// Update event details
+router.put("/event/:id", authMiddleware, async (req, res) => {
+  const { title, date, description } = req.body;
+
+  try {
+    const event = await Event.findById(req.params.id);
+    if (!event) {
+      return res.status(404).json({ message: "Event not found" });
+    }
+
+    event.title = title || event.title;
+    event.date = date || event.date;
+    event.description = description || event.description;
+
+    await event.save();
+    res.status(200).json(event);
+  } catch (error) {
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// Delete event
+router.delete("/event/:id", authMiddleware, async (req, res) => {
+  try {
+    const event = await Event.findByIdAndDelete(req.params.id);
+    if (!event) {
+      return res.status(404).json({ message: "Event not found" });
+    }
+    res.status(200).json({ message: "Event deleted successfully" });
+  } catch (error) {
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+module.exports = router;
+-----------------------
+File: ./routes/gpaRoutes.js
+const express = require("express");
+const GPA = require("../models/GPA");
+const authMiddleware = require("../middleware/authMiddleware");
+
+const router = express.Router();
+
+// Add or Update GPA for a specific semester
+router.post("/add-gpa", authMiddleware, async (req, res) => {
+  const { gpa, semester, year } = req.body;
+  try {
+    let gpaRecord = await GPA.findOne({ userId: req.user.id, semester, year });
+
+    if (!gpaRecord) {
+      gpaRecord = new GPA({
+        userId: req.user.id,
+        gpa,
+        semester,
+        year,
+      });
+    } else {
+      gpaRecord.gpa = gpa;
+      gpaRecord.semester = semester;
+      gpaRecord.year = year;
+    }
+
+    await gpaRecord.save();
+
+    res.status(200).json(gpaRecord);
+  } catch (error) {
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// Get GPA records for a student
+router.get("/gpa-records", authMiddleware, async (req, res) => {
+  try {
+    const gpas = await GPA.find({ userId: req.user.id });
+    res.status(200).json(gpas);
+  } catch (error) {
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+module.exports = router;
+-----------------------
+File: ./routes/reminderRoutes.js
+const express = require("express");
+const Reminder = require("../models/Reminder");
+const authMiddleware = require("../middleware/authMiddleware");
+
+const router = express.Router();
+
+// Add a reminder for a student
+router.post("/add-reminder", authMiddleware, async (req, res) => {
+  const { title, date, time, description } = req.body;
+
+  try {
+    const reminder = new Reminder({
+      userId: req.user.id,
+      title,
+      date,
+      time,
+      description,
+    });
+
+    await reminder.save();
+    res.status(201).json(reminder);
+  } catch (error) {
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// Get all reminders for a student
+router.get("/reminders", authMiddleware, async (req, res) => {
+  try {
+    const reminders = await Reminder.find({ userId: req.user.id });
+    res.status(200).json(reminders);
+  } catch (error) {
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+module.exports = router;
+-----------------------
+File: ./routes/timetableRoutes.js
+const express = require("express");
+const Timetable = require("../models/Timetable");
+const authMiddleware = require("../middleware/authMiddleware");
+
+const router = express.Router();
+
+router.post("/add-event", authMiddleware, async (req, res) => {
+  const { title, date, time, description } = req.body;
+  try {
+    let timetable = await Timetable.findOne({ userId: req.user.id });
+
+    if (!timetable) {
+      timetable = new Timetable({ userId: req.user.id, events: [] });
+    }
+
+    timetable.events.push({ title, date, time, description });
+    await timetable.save();
+
+    res.status(201).json(timetable);
+  } catch (error) {
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+module.exports = router;
+-----------------------
+File: ./routes/userRoutes.js
+const express = require("express");
+const User = require("../models/User");
+const authMiddleware = require("../middleware/authMiddleware");
+const roleMiddleware = require("../middleware/roleMiddleware");
+const router = express.Router();
+
+// Get user details (Authenticated users can view their own data)
+router.get("/me", authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select("-password"); // Exclude password
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+    res.json(user);
+  } catch (error) {
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// Update user profile (Authenticated users can update their own data)
+router.put("/me", authMiddleware, async (req, res) => {
+  const { name, email } = req.body;
+
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Update fields
+    if (name) user.name = name;
+    if (email) user.email = email;
+
+    await user.save();
+    res.json(user);
+  } catch (error) {
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// Get all users (Admins only)
+router.get("/", authMiddleware, roleMiddleware("admin"), async (req, res) => {
+  try {
+    const users = await User.find().select("-password");
+    res.json(users);
+  } catch (error) {
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+module.exports = router;
+-----------------------
+File: ./server.js
+const express = require("express");
+const dotenv = require("dotenv");
+const cors = require("cors");
+const connectDB = require("./config/db");
+
+dotenv.config();
+connectDB();
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+app.use("/api/auth", require("./routes/authRoutes"));
+app.use("/api/timetable", require("./routes/timetableRoutes"));
+app.use("/api/gpa", require("./routes/gpaRoutes"));
+app.use("/api/reminder", require("./routes/reminderRoutes"));
+
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+-----------------------
